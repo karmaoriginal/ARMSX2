@@ -208,7 +208,15 @@ object ConfigStore {
         // on too many setups. Everyone starts on PCSX2's two-frame queue and can opt in from the
         // Performance tab. Settings.vsyncQueueSize already defaults to 2, so this just materialises
         // the global save that the rest of the config layer keys "is this a fresh install?" off.
-        saveGlobal(freshInstallSettings(iopThreadDefaultOn, hasVulkan11()))
+        var seeded = freshInstallSettings(iopThreadDefaultOn, hasVulkan11())
+        // Ultra-low-tier phones (Moto G24 class) start on the Ultra preset instead of stock
+        // defaults: stock settings were tuned for mid-range silicon and leave 2xA75 + Mali-G52
+        // devices stuttering through even light scenes. The preset is a plain global save — the
+        // user can still pick any other profile from the Performance tab afterwards.
+        if (runCatching { com.armsx2.DeviceTier.isUltraLowEnd(context) }.getOrDefault(false)) {
+            seeded = Settings.ultraLowPreset(seeded, com.armsx2.DeviceTier.mtvuDefault())
+        }
+        saveGlobal(seeded)
     }
 
     /** Whether the system Vulkan driver reports version 1.1 or newer, the version the Vulkan renderer asks for.

@@ -99,4 +99,85 @@ object DeviceTier {
     } catch (_: Throwable) {
         "unknown"
     }
+
+    // ---- Ultra-low tier (Moto G24 class) --------------------------------------
+    // The phones at the very bottom of the playable range for PS2 emulation: a
+    // ~2 GHz Cortex-A75 pair for the EE/VU recompilers and a small Bifrost Mali
+    // (G31/G51/G52, usually 2 cores) for the GS. The reference device is the
+    // Motorola Moto G24 (XT2423, Helio G85, Mali-G52 MC2, 4 GB RAM, Android 14),
+    // but anything in the same silicon class gets the same treatment.
+    //
+    // Like [isLowEnd] this is only ever a *hint*: it seeds the Ultra preset on
+    // a fresh install and recommends it in the Performance tab. Every function
+    // takes its inputs as parameters (defaulting to the live Build values) so
+    // JVM unit tests can drive them without the Android framework.
+
+    /** Motorola Moto G24 / G24 Power (retail model "moto g24…", codename XT2423). */
+    fun isMotoG24(
+        model: String? = runCatching { Build.MODEL }.getOrNull(),
+        manufacturer: String? = runCatching { Build.MANUFACTURER }.getOrNull(),
+    ): Boolean = try {
+        if (manufacturer?.contains("motorola", ignoreCase = true) != true) return false
+        val m = model.orEmpty().lowercase()
+        m.contains("g24") || m.contains("xt2423")
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** MediaTek Helio G70/G80/G85 class (all MT6769 variants): 2x Cortex-A75 +
+     *  6x Cortex-A55 with a Mali-G52. [soc] is [socModel], [hardware] is
+     *  Build.HARDWARE (on MediaTek bootloaders usually the "mt6769" platform). */
+    fun isHelioG85Class(
+        soc: String? = runCatching { socModel() }.getOrNull(),
+        hardware: String? = runCatching { Build.HARDWARE }.getOrNull(),
+    ): Boolean = try {
+        val s = "${soc.orEmpty()} ${hardware.orEmpty()}".lowercase()
+        s.contains("mt6769") || (s.contains("helio") && (s.contains("g85") || s.contains("g80")))
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** Small Bifrost Mali by GL_RENDERER ("Mali-G52 MC2", "Mali-G51 MP4", …):
+     *  the GPUs whose fill-rate and tile budget put them in the ultra-low
+     *  tier. Larger Bifrost (G71/G72/G76) and all Valhall and later are out. */
+    fun isSmallBifrostMali(renderer: String?): Boolean = try {
+        if (renderer?.contains("mali", ignoreCase = true) != true) return false
+        Regex("""\bG(?:31|51|52)(?!\d)""", RegexOption.IGNORE_CASE).containsMatchIn(renderer)
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** Pure predicate behind [isUltraLowEnd], for unit tests. */
+    fun isUltraLowEndDevice(
+        model: String?,
+        manufacturer: String?,
+        soc: String?,
+        hardware: String?,
+        renderer: String?,
+    ): Boolean = isMotoG24(model, manufacturer) ||
+        isHelioG85Class(soc, hardware) ||
+        isSmallBifrostMali(renderer)
+
+    /**
+     * Whether this phone is in the ultra-low (Moto G24 class) tier for PS2
+     * emulation and should start on the Ultra preset. Any single match —
+     * Moto G24 model, Helio G85 SoC, or a small Bifrost Mali GPU — is enough;
+     * on any probe failure the device is treated as NOT ultra-low.
+     *
+     * [context] is currently unused (the tier is model/SoC/GPU based, not
+     * RAM based); it keeps the signature parallel to [isLowEnd] and reserves
+     * the option to weigh RAM without touching every caller.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun isUltraLowEnd(context: Context, renderer: String? = GpuInfo.rendererName()): Boolean = try {
+        isUltraLowEndDevice(
+            runCatching { Build.MODEL }.getOrNull(),
+            runCatching { Build.MANUFACTURER }.getOrNull(),
+            runCatching { socModel() }.getOrNull(),
+            runCatching { Build.HARDWARE }.getOrNull(),
+            renderer,
+        )
+    } catch (_: Throwable) {
+        false
+    }
 }

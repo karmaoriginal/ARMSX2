@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.armsx2.BiosInfo
 import com.armsx2.CustomDriver
+import com.armsx2.DeviceTier
 import com.armsx2.GpuInfo
 import com.armsx2.config.ConfigStore
 import com.armsx2.runtime.MainActivityRuntime
@@ -52,6 +53,8 @@ data class OnboardingUiState(
     val gameFolders: List<String> = emptyList(),
     /** Automatic performance tuning (EmuCore/AutoTune). Off unless the player turned it on before. */
     val autoTune: Boolean = false,
+    /** Ultra-low-tier phone (Moto G24 class): the fresh install was seeded on the Ultra preset. */
+    val ultraLowDevice: Boolean = false,
     /** Name of the driver source offered on the driver page ("ARMSX2 · MaliSX2"); empty when the page is not shown. */
     val driverSource: String = "",
     /** The offered driver is malisx2, which has a kernel requirement worth telling the player about. */
@@ -86,8 +89,10 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         val driverSource = CustomDriver.setupOfferLabel(renderer)
             ?.takeIf { runCatching { ConfigStore.loadGlobal().output.customDriverId.isBlank() }.getOrDefault(true) }
         val steps = if (driverSource != null) SetupStep.entries.toList() else SetupStep.entries - SetupStep.Driver
+        val ultraLow = runCatching { DeviceTier.isUltraLowEnd(getApplication(), renderer) }.getOrDefault(false)
         state.value = state.value.copy(
             steps = steps,
+            ultraLowDevice = ultraLow,
             driverSource = driverSource.orEmpty(),
             driverIsMali = driverSource != null && CustomDriver.offersMaliSX2(renderer),
             systemLocation = when {

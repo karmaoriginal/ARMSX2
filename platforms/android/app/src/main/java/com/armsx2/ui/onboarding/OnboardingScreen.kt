@@ -634,6 +634,32 @@ private fun GamesPage(
 @Composable
 private fun PerformancePage(state: OnboardingUiState, onAutoTune: (Boolean) -> Unit) {
     SetupPage(str("setup.page.performance.title"), str("setup.step.performance.description")) {
+        // Ultra-low-tier phones (Moto G24 class) were seeded on the Ultra preset by
+        // ConfigStore.seedFreshInstallDefaults before setup ran — say so, so the
+        // download-and-play crowd knows the optimisation is already in place.
+        if (state.ultraLowDevice) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+            ) {
+                Row(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("⚡", fontSize = 20.sp)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(str("setup.performance.ultra.title"), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            str("setup.performance.ultra.detail"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
         Surface(
             onClick = { onAutoTune(!state.autoTune) },
             modifier = Modifier.fillMaxWidth().padFocusRing(RoundedCornerShape(20.dp)),

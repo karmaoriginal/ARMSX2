@@ -7,11 +7,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.armsx2.config.Settings
 import com.armsx2.i18n.str
 import com.armsx2.ui.InGameOverlay
@@ -140,16 +145,22 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 ),
                 mtvu = com.armsx2.DeviceTier.mtvuDefault(),
             )
+            // Ultra = the Moto G24 preset: Low-End pushed further (EE skip 2,
+            // sub-output 448p, coalesced passes, Vulkan pinned). Complete on its
+            // own — unlike Low-End it sets the whole speedhack block — so it
+            // needs no baseline wrapper; ultraLowPreset(s, …) is the target.
+            val ultra = Settings.ultraLowPreset(s, mtvu = com.armsx2.DeviceTier.mtvuDefault())
             // -1 = no preset matches (custom): no segment highlighted.
-            val idx = when (s) { safe -> 0; fast -> 1; lowEnd -> 2; else -> -1 }
+            val idx = when (s) { safe -> 0; fast -> 1; lowEnd -> 2; ultra -> 3; else -> -1 }
             SegmentedRow(
                 label = str("perf.speedhackProfile.label"),
-                options = listOf(str("perf.speedhackProfile.optimal"), str("perf.speedhackProfile.fast"), str("perf.speedhackProfile.lowEnd")),
+                options = listOf(str("perf.speedhackProfile.optimal"), str("perf.speedhackProfile.fast"), str("perf.speedhackProfile.lowEnd"), str("perf.speedhackProfile.ultra")),
                 selectedIndex = idx,
-                onChange = { when (it) { 0 -> apply(safe); 1 -> apply(fast); 2 -> apply(lowEnd) } },
+                onChange = { when (it) { 0 -> apply(safe); 1 -> apply(fast); 2 -> apply(lowEnd); 3 -> apply(ultra) } },
             )
         }
         HelpText(str("perf.speedhackProfile.help"))
+        SotcPresetCard(s) { apply(it) }
         SettingsDivider()
         // ---- Display Resolution (HW scaler), NetherSX2-style ----------------
         // Shrinks the game's OUTPUT surface (hardware-composer upscales to the
@@ -477,5 +488,51 @@ fun PerformanceTab(state: MutableState<Settings>) {
             ToggleRow(str("perf.hack.deferVuWrites"), s.cpu.vuDeferredWrites, description = str("perf.hack.deferVuWrites.desc"), field = "vuDeferredWrites") { apply(s.copy(cpu = s.cpu.copy(vuDeferredWrites = it))) }
             ToggleRow(str("perf.hack.skipDupeFrames"), s.emuCore.skipDuplicateFrames, description = str("perf.hack.skipDupeFrames.desc"), field = "skipDuplicateFrames") { apply(s.copy(emuCore = s.emuCore.copy(skipDuplicateFrames = it))) }
         }
+    }
+}
+
+/**
+ * One-tap Shadow of the Colossus preset, shown only while a SOTC disc is
+ * loaded ([Settings.isShadowOfTheColossus] over the overlay serial, falling
+ * back to the running game's serial for launches without one).
+ *
+ * Applies [Settings.shadowColossusPreset] through the same [onApply] path as
+ * every other row, so Game scope pins it per-game and Global scope would set
+ * it for everything. The player's automatic-tuning choice is preserved: a
+ * preset write otherwise turns auto-tune off for the game (upscale + hwScaler
+ * are auto-tune levers), and a curated preset must not silently take that
+ * away — the second write only flips autoTune itself, which is not a lever,
+ * so it sticks. If auto-tune was already off, nothing is re-enabled.
+ */
+@Composable
+private fun SotcPresetCard(s: Settings, onApply: (Settings) -> Unit) {
+    val serial = InGameOverlay.currentSerial.value
+        ?: com.armsx2.runtime.MainActivityRuntime.currentGame.value?.serial
+    if (!Settings.isShadowOfTheColossus(serial)) return
+    SettingsDivider()
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            str("perf.sotcPreset.label"),
+            color = MaterialTheme.colorScheme.primary,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            str("perf.sotcPreset.description"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                val keepAutoTune = s.emuCore.autoTune
+                val preset = Settings.shadowColossusPreset(s, com.armsx2.DeviceTier.mtvuDefault())
+                onApply(preset)
+                if (keepAutoTune) onApply(preset.copy(emuCore = preset.emuCore.copy(autoTune = true)))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(str("perf.sotcPreset.button")) }
     }
 }
