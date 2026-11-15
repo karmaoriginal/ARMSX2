@@ -2403,6 +2403,96 @@ data class Settings(
             ),
         )
 
+        /** One-tap "Ultra" snapshot for ultra-low-tier phones (Moto G24 class:
+         *  [com.armsx2.DeviceTier.isUltraLowEnd]). Low-End, pushed further on
+         *  every lever that stays safe on that silicon:
+         *    - EE cycle skip 2 + fast CDVD + every recommended speedhack on,
+         *      MTVU device-aware, IOP thread on (the core parks it by itself
+         *      on hosts that can't run it)
+         *    - internal resolution 1x + output surface 448p (hwScaler 1) —
+         *      the composer upscales to the 720p panel for free
+         *    - render-side: Minimum blending, no HW mipmaps, Partial texture
+         *      preloading, coalesced render passes (pure win on tilers),
+         *      Vulkan pinned (MaliSX2/custom-driver path lives there)
+         *  Unlike [lowEndPreset] this sets the full speedhack block, so callers
+         *  need no baseline wrapper: `ultraLowPreset(s, mtvu)` is complete.
+         *  [mtvu] is passed in for the same reason as in [lowEndPreset]. */
+        fun ultraLowPreset(base: Settings, mtvu: Boolean): Settings = base.copy(
+            cpu = base.cpu.copy(
+                eeCycleRate = 0,
+                eeCycleSkip = 2,
+                mtvu = mtvu,
+                iopThread = true,
+                vu1Instant = true,
+                vuFlagHack = true,
+                fastCDVD = true,
+                intcStat = true,
+                waitLoop = true,
+            ),
+            display = base.display.copy(
+                hwRov = false,
+                coalesceRenderPasses = true,
+            ),
+            hwFixes = base.hwFixes.copy(
+                gpuPaletteConversion = false,
+            ),
+            output = base.output.copy(
+                renderer = "vulkan",
+                upscaleFloat = 1.0f,
+                hwScaler = 1,
+            ),
+            graphics = base.graphics.copy(
+                accurateBlendingUnit = 0,   // Minimum
+                hwMipmap = false,           // mipmap off
+                texturePreloading = 1,      // Partial
+            ),
+        )
+
+        /** Every disc serial Shadow of the Colossus shipped on: the seven
+         *  retail releases (the same list the core's IopThreadGameDb test pins)
+         *  plus the demo/promo discs, which run the same engine and want the
+         *  same settings. Matched case-insensitively after trimming. */
+        val SHADOW_OF_THE_COLOSSUS_SERIALS: Set<String> = setOf(
+            // Retail.
+            "SCUS-97472", "SCES-53326", "SCPS-15097", "SCPS-19320", "SCPS-19335",
+            "SCKA-20061", "SCKA-20106",
+            // Demos / promo.
+            "SCED-53962", "SCED-53990", "SCUS-97505",
+        )
+
+        /** Whether [serial] (bare, e.g. "SCUS-97472", or anything carrying one
+         *  like "scus-97472 (CRC)") is a Shadow of the Colossus disc. Null-safe. */
+        fun isShadowOfTheColossus(serial: String?): Boolean {
+            if (serial.isNullOrBlank()) return false
+            val upper = serial.uppercase().trim()
+            return SHADOW_OF_THE_COLOSSUS_SERIALS.any { upper.contains(it) }
+        }
+
+        /** Per-game "Shadow of the Colossus" snapshot, tuned so a Moto G24
+         *  holds ~20 fps: [ultraLowPreset] plus the two SOTC-specific moves —
+         *  EE underclock to 75% (this title is EE-bound on a 2 GHz A75 and
+         *  tolerates a mild underclock) and 0.75x sub-native rendering (SOTC
+         *  is blend/fill-heavy on the G52's two shader cores).
+         *
+         *  Meant for Game scope (the Performance tab offers it only while a
+         *  SOTC disc is loaded), so other titles keep the global preset. If a
+         *  colossus fight still dips under 20, the documented next steps are
+         *  EE cycle skip 3 and, for even pacing, a 20 fps display cap — see
+         *  platforms/android/MOTO_G24_SOTC_GUIA_ES.md. */
+        fun shadowColossusPreset(base: Settings, mtvu: Boolean): Settings {
+            val ultra = ultraLowPreset(base, mtvu)
+            return ultra.copy(
+                cpu = ultra.cpu.copy(
+                    eeCycleRate = -1,       // 75% — the SOTC CPU saver
+                    eeCycleSkip = 2,
+                ),
+                output = ultra.output.copy(
+                    upscaleFloat = 0.75f,   // sub-native — the SOTC fill saver
+                    hwScaler = 1,
+                ),
+            )
+        }
+
         /** Lenient parse — missing keys fall back to defaults so old saved
          *  blobs survive when new fields are added. */
         fun fromJson(json: JSONObject): Settings {
