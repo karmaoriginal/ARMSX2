@@ -1,0 +1,238 @@
+# Personal/fork APK release pipeline, run by hand from the Actions tab.
+#
+# Builds ONE universal Android APK (dual native core: 4K + 16K page sizes,
+# PGO=optimize) from the current branch and publishes it on a FULL GitHub
+# release — published immediately, NOT a draft and NOT a prerelease.
+#
+# This is the side-build path (device-specific tuning, personal forks). It is
+# deliberately NOT gated on ARMSX2/ARMSX2, unlike nightly.yml and release.yml,
+# so it runs on any fork with Actions enabled. It never touches the upstream
+# release line: no versionCode ordering checks, no rotation lineage, no draft.
+#
+# How to run it (Actions tab -> "APK Release (fork)" -> Run workflow):
+#   version       Tag + Android versionName, e.g. "moto-g24-1". A published
+#                 release is created with exactly this tag.
+#   version_code  Android versionCode (integer). Must be HIGHER than whatever
+#                 APK is installed on the phone, or Android refuses the update.
+#   package       applicationId. Keep com.armsx2 (then uninstall any other
+#                 ARMSX2 first — signatures differ), or e.g. com.armsx2.moto
+#                 to install side-by-side with everything else.
+#   notes         Optional extra release notes (markdown).
+#
+# Signing (no secrets required):
+#   Without secrets the APK is signed with a throwaway debug key generated on
+#   the runner. It installs and runs fine, but it can NEVER update over an
+#   upstream-signed install (or a previous throwaway build): uninstall first.
+#   For a stable certificate across rebuilds, add these OPTIONAL repo secrets
+#   (base64 of any JKS you own + its passwords):
+#     APK_RELEASE_KS_B64, APK_RELEASE_KS_PASS, APK_RELEASE_KEY_ALIAS,
+#     APK_RELEASE_KEY_PASS (optional when equal to the store password)
+#
+# Re-running for the same version replaces the release's assets in place
+# (--clobber) and leaves hand-edited notes alone.
+#
+# What this build does NOT have (all fork-expected, all warned about in the log):
+#   * Discord integration (needs the private DISCORD_SDK_URL secret)
+#   * RetroAchievements hardcore (needs the RA_UA_VERSION secret; softcore only)
+#   * The upstream rotation signing lineage (needs the NIGHTLY_* secrets)
+name: APK Release (fork)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag + Android versionName (e.g. moto-g24-1). Becomes a published, full (not prerelease) release with this tag.'
+        required: true
+        type: string
+      version_code:
+        description: 'Android versionCode (integer). Must be higher than the installed APK or Android refuses the update.'
+        required: true
+        type: string
+      package:
+        description: 'applicationId. Keep com.armsx2 (uninstall other ARMSX2 builds first), or e.g. com.armsx2.moto for side-by-side.'
+        required: false
+        type: string
+        default: 'com.armsx2'
+      notes:
+        description: 'Extra release notes (markdown, optional).'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apk-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  # ---- build: one universal (4k + 16k) + PGO APK -------------------------
+  build:
+    name: Build universal APK
+    runs-on: ubuntu-24.04
+    outputs:
+      signing: ${{ steps.apk.outputs.signing }}
+    defaults:
+      run:
+        working-directory: platforms/android
+    env:
+      VN: ${{ inputs.version }}
+      VC: ${{ inputs.version_code }}
+      PKG: ${{ inputs.package }}
+    steps:
+      - name: Check the inputs
+        run: |
+          [[ "$VN" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+            || { echo "::error::version '$VN' is not tag-safe (letters, digits, . _ -, no spaces/slashes)"; exit 1; }
+          [[ "$VC" =~ ^[0-9]+$ ]] \
+            || { echo "::error::version_code '$VC' is not a number"; exit 1; }
+          [[ "$PKG" =~ ^[a-z][a-z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$ ]] \
+            || { echo "::error::package '$PKG' is not a valid applicationId (e.g. com.armsx2)"; exit 1; }
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # The action's default is "tools platform-tools"; Google removed the
+          # legacy "tools" package, so installing it fails the whole job.
+          packages: platform-tools
+
+      # Must match the NDK/CMake the release recipe pins for every tier.
+      - name: Install NDK + CMake
+        run: yes | sdkmanager "ndk;29.0.14206865" "cmake;3.31.6" >/dev/null || true
+
+      - name: Fetch shaderc third-party deps
+        run: python3 app/src/main/cpp/3rdparty/shaderc/utils/git-sync-deps
+
+      - name: Install Rust Android target
+        run: rustup target add aarch64-linux-android
+
+      # RetroAchievements identity. The upstream identity lives in a secret precisely so
+      # forks DON'T inherit it; without RA_UA_REQUIRED this just warns and the build goes
+      # out softcore-only (see write-ra-ua-secret.sh). A fork owner with their own client
+      # version can add RA_UA_VERSION as a repo secret and get hardcore under their name.
+      - name: Embed the RetroAchievements client identity (softcore-tolerant)
+        working-directory: ${{ github.workspace }}
+        env:
+          RA_UA_VERSION: ${{ secrets.RA_UA_VERSION }}
+        run: bash .github/workflows/scripts/common/write-ra-ua-secret.sh
+
+      - name: Decode the optional fork signing key
+        id: forkkey
+        env:
+          KS_B64: ${{ secrets.APK_RELEASE_KS_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/fork-release.jks" \
+              || { echo "::error::APK_RELEASE_KS_B64 is not valid base64"; exit 1; }
+            echo "Fork signing key decoded."
+          else
+            echo "No APK_RELEASE_KS_B64 secret — the APK will carry a throwaway signature (reinstall between builds)."
+          fi
+
+      - name: Build universal APK
+        id: apk
+        env:
+          OUT: ${{ runner.temp }}/apk/ARMSX2-${{ inputs.version }}-Android-arm64.apk
+          APK_ID: ${{ inputs.package }}
+          APK_RELEASE_KS: ${{ runner.temp }}/fork-release.jks
+          APK_RELEASE_KS_PASS: ${{ secrets.APK_RELEASE_KS_PASS }}
+          APK_RELEASE_KEY_ALIAS: ${{ secrets.APK_RELEASE_KEY_ALIAS }}
+          APK_RELEASE_KEY_PASS: ${{ secrets.APK_RELEASE_KEY_PASS }}
+        run: |
+          bash tools/ci-fork-dualcore.sh 2>&1 | tee "$RUNNER_TEMP/build.log"
+          grep -q "FORK-DUALCORE-DONE" "$RUNNER_TEMP/build.log" || { echo "::error::build script did not finish"; exit 1; }
+          echo "signing=$(grep -Eo 'FORK-SIGNING:[a-z]+' "$RUNNER_TEMP/build.log" | tail -1 | cut -d: -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: armsx2-apk-release
+          path: ${{ runner.temp }}/apk/*.apk
+          if-no-files-found: error
+
+  # ---- publish: full release (NOT draft, NOT prerelease) ------------------
+  publish:
+    name: Publish full release
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.version }}
+      VC: ${{ inputs.version_code }}
+      PKG: ${{ inputs.package }}
+      SIGNING: ${{ needs.build.outputs.signing }}
+      USER_NOTES: ${{ inputs.notes }}
+    steps:
+      - name: Download the APK artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: armsx2-apk-release
+          path: dl
+
+      - name: Collect release assets
+        run: |
+          mkdir -p out
+          src=$(find dl -type f -name '*.apk' | head -1) || true
+          [ -n "$src" ] || { echo "::error::no APK in the artifact"; exit 1; }
+          cp "$src" "out/ARMSX2-${TAG}-Android-arm64.apk"
+          (cd out && sha256sum "ARMSX2-${TAG}-Android-arm64.apk" > "ARMSX2-${TAG}-Android-arm64.apk.sha256")
+          ls -la out
+
+      - name: Write the release notes
+        run: |
+          {
+            echo "# ARMSX2 $TAG (personal/fork build)"
+            echo
+            echo "- Commit: \`${GITHUB_SHA::7}\` · Built: $(date -u +%Y-%m-%d) (UTC) · From branch: \`$GITHUB_REF_NAME\`"
+            echo "- Package: \`$PKG\` · versionName \`$TAG\` · versionCode \`$VC\`"
+            echo "- Universal APK: dual native core (4K + 16K page sizes) + PGO."
+            echo
+            echo "## Instalar / Install"
+            echo "1. If another ARMSX2 with the same package is installed, uninstall it first — this build is signed differently and Android rejects the update. (Si tienes otro ARMSX2 con el mismo package, desinstalalo primero.)"
+            echo "2. Install the APK and play. On a Moto G24-class phone the Ultra preset is already active; for Shadow of the Colossus tap \"Apply 20 FPS preset\" under Performance."
+            echo "3. Full guide (Spanish): \`platforms/android/MOTO_G24_SOTC_GUIA_ES.md\`."
+            echo
+            if [ "$SIGNING" = "stable" ]; then
+              echo "Signed with the fork's stable key: rebuilds update over each other."
+            else
+              echo "Signed with a throwaway debug key: this APK can never update over another build — uninstall before installing a newer one."
+            fi
+            echo "No Discord integration; RetroAchievements softcore only (fork build, no client secrets)."
+            if [ -n "$USER_NOTES" ]; then
+              echo
+              echo "## Notes"
+              printf '%s\n' "$USER_NOTES"
+            fi
+          } > NOTES.md
+          cat NOTES.md
+
+      - name: Publish the release (full, not prerelease)
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — replacing its assets (re-run). Hand-edited notes are left alone."
+            gh release upload "$TAG" out/* -R "$GITHUB_REPOSITORY" --clobber
+          else
+            # A published, FULL release: no --draft, no --prerelease, marked latest.
+            # --target pins the tag to THIS commit (without it gh would tag the default branch).
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "ARMSX2 $TAG" \
+              --notes-file NOTES.md \
+              --latest \
+              out/*
+          fi
+          echo "Release ready: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
